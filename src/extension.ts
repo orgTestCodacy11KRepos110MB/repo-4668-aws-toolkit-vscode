@@ -95,15 +95,13 @@ export async function activate(context: vscode.ExtensionContext) {
     })
 
     try {
+        const awsContext = (globals.awsContext = new DefaultAwsContext())
+        const credentialsStore = new CredentialsStore()
+        const loginManager = (globals.loginManager = new LoginManager(globals.awsContext, credentialsStore))
         initializeCredentialsProviderManager()
 
         const endpointsProvider = makeEndpointsProvider()
-
-        const awsContext = new DefaultAwsContext()
-        globals.awsContext = awsContext
         const regionProvider = RegionProvider.fromEndpointsProvider(endpointsProvider)
-        const credentialsStore = new CredentialsStore()
-        const loginManager = new LoginManager(globals.awsContext, credentialsStore)
 
         const toolkitEnvDetails = getToolkitEnvironmentDetails()
         // Splits environment details by new line, filter removes the empty string
@@ -114,7 +112,6 @@ export async function activate(context: vscode.ExtensionContext) {
 
         await initializeAwsCredentialsStatusBarItem(awsContext, context)
         globals.regionProvider = regionProvider
-        globals.loginManager = loginManager
         globals.awsContextCommands = new AwsContextCommands(regionProvider, Auth.instance)
         globals.sdkClientBuilder = new DefaultAWSClientBuilder(awsContext)
         globals.schemaService = new SchemaService(context)

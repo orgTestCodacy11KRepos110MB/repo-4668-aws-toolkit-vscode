@@ -20,6 +20,7 @@ interface RegionPrompterOptions {
     readonly buttons?: PrompterButtons<Region>
     readonly serviceFilter?: string
     readonly helpUrl?: string | vscode.Uri
+    readonly placeholder?: string
 }
 
 export function createRegionPrompter(
@@ -49,6 +50,7 @@ export function createRegionPrompter(
     }
 
     const prompter = createQuickPick(items, {
+        placeholder: options.placeholder,
         title: options.title ?? localize('AWS.generic.selectRegion', 'Select a region'),
         buttons: options.buttons ?? createCommonButtons(options.helpUrl),
         matchOnDetail: true,

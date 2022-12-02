@@ -48,7 +48,7 @@ export const codecatalystScopes = ['codecatalyst:read_write']
 export const ssoAccountAccessScopes = ['sso:account:access']
 export const codewhispererScopes = ['codewhisperer:completions', 'codewhisperer:analysis']
 
-export function createBuilderIdProfile(): SsoProfile & { readonly scopes: string[] } {
+export function createBuilderIdProfile(): SsoProfile {
     return {
         type: 'sso',
         ssoRegion: 'us-east-1',
@@ -57,17 +57,17 @@ export function createBuilderIdProfile(): SsoProfile & { readonly scopes: string
     }
 }
 
-export function createSsoProfile(startUrl: string, region = 'us-east-1'): SsoProfile & { readonly scopes: string[] } {
+export function createSsoProfile(startUrl: string, ssoRegion: string, extraScopes: string[] = []): SsoProfile {
     return {
         type: 'sso',
         startUrl,
-        ssoRegion: region,
-        scopes: [...ssoAccountAccessScopes],
+        ssoRegion,
+        scopes: Array.from(new Set([...ssoAccountAccessScopes, ...extraScopes])),
     }
 }
 
 export function hasScopes(target: SsoConnection | SsoProfile, scopes: string[]): boolean {
-    return scopes?.every(s => target.scopes?.includes(s))
+    return scopes.every(s => target.scopes.includes(s))
 }
 
 export interface SsoConnection {
@@ -75,7 +75,8 @@ export interface SsoConnection {
     readonly id: string
     readonly label: string
     readonly startUrl: string
-    readonly scopes?: string[]
+    readonly scopes: string[]
+    readonly defaultRegion: string
 
     /**
      * Retrieves a bearer token, refreshing or re-authenticating as-needed.
@@ -101,7 +102,7 @@ export interface SsoProfile {
     readonly type: 'sso'
     readonly ssoRegion: string
     readonly startUrl: string
-    readonly scopes?: string[]
+    readonly scopes: string[]
 }
 
 export interface IamProfile {
@@ -237,7 +238,16 @@ export class ProfileStore {
     }
 
     private getData() {
-        return this.memento.get<{ readonly [id: string]: StoredProfile }>('auth.profiles', {})
+        const data = this.memento.get<{ readonly [id: string]: StoredProfile }>('auth.profiles', {})
+
+        // Temporary. Remove after changing the connection id format
+        for (const [id, profile] of Object.entries(data)) {
+            if (profile.type === 'sso' && !profile.scopes) {
+                ;(data as Mutable<typeof data>)[id] = { ...profile, scopes: [] }
+            }
+        }
+
+        return data
     }
 
     private async updateData(state: { readonly [id: string]: StoredProfile | undefined }) {
@@ -278,7 +288,7 @@ async function* loadLinkedProfilesIntoStore(store: ProfileStore, source: Connect
     const stream = client
         .listAccounts()
         .flatten()
-        .unorderedMap(resp => client.listAccountRoles({ accountId: resp.accountId }).flatten().promise())
+        .map(resp => client.listAccountRoles({ accountId: resp.accountId }).flatten())
         .flatten()
 
     for await (const info of stream) {
@@ -315,15 +325,7 @@ function keyedDebounce<T, U extends any[], K extends string = string>(
 
 // TODO: replace this with `idToken` when available
 export function getSsoProfileKey(profile: Pick<SsoProfile, 'startUrl' | 'scopes'>): string {
-    const scopesFragment = profile.scopes ? `?scopes=${profile.scopes.sort()}` : ''
-
-    return `${profile.startUrl}${scopesFragment}`
-}
-
-function sortProfilesByScope(profiles: StoredProfile<Profile>[]): StoredProfile<SsoProfile>[] {
-    return profiles
-        .filter((c): c is StoredProfile<SsoProfile> => c.type === 'sso')
-        .sort((a, b) => (a.scopes?.length ?? 0) - (b.scopes?.length ?? 0))
+    return `${profile.startUrl}?scopes=${profile.scopes.sort()}`
 }
 
 // The true connection state can only be known after trying to use the connection
@@ -338,7 +340,8 @@ export class Auth implements AuthService, ConnectionManager {
     public constructor(
         private readonly store: ProfileStore,
         private readonly createTokenProvider = createFactoryFunction(SsoAccessTokenProvider),
-        private readonly iamProfileProvider = CredentialsProviderManager.getInstance()
+        private readonly iamProfileProvider = CredentialsProviderManager.getInstance(),
+        private readonly loginManager = globals.loginManager
     ) {}
 
     #activeConnection: Mutable<StatefulConnection> | undefined
@@ -427,17 +430,16 @@ export class Auth implements AuthService, ConnectionManager {
                 .listProfiles()
                 .filter(([_, profile]) => profile.type !== 'linked')
                 .map(getConnectionSafe)
-            const ssoProfiles = this.store.listProfiles().filter(([_, profile]) => profile.type === 'sso')
-            const linkedConnections = ssoProfiles.map(([id]) => {
-                return toCollection(() => this.loadLinkedProfiles({ id }))
-                    .map(getConnectionSafe)
-                    .promise()
-            })
 
-            yield* join(toStream(baseConnections), toStream(linkedConnections))
+            const linkedConnections = this.store
+                .listProfiles()
+                .filter(([_, profile]) => profile.type === 'sso')
+                .map(([id]) => toCollection(() => this.loadLinkedProfiles({ id })).map(getConnectionSafe))
+
+            yield* linkedConnections.reduce(join, toStream(baseConnections))
         }
 
-        return toCollection(load.bind(this)).flatten().filter(isNonNullable)
+        return toCollection(load.bind(this)).filter(isNonNullable)
     }
 
     public *listLinkedCredentialsProviders() {
@@ -480,17 +482,25 @@ export class Auth implements AuthService, ConnectionManager {
 
     private async *loadLinkedProfiles({ id }: Pick<Connection, 'id'>) {
         const profile = this.store.getProfileOrThrow(id)
-        if (profile.type !== 'sso' || !ssoAccountAccessScopes.every(s => profile.scopes?.includes(s))) {
+        if (profile.type !== 'sso' || !hasScopes(profile, ssoAccountAccessScopes)) {
             return
         }
+
         const { metadata } = await this.validateConnection(id, profile)
         if (metadata.connectionState !== 'valid') {
-            return
+            return yield* this.store
+                .listProfiles()
+                .filter(([_, profile]) => profile.type === 'linked' && profile.source === id)
         }
 
         const provider = this.getTokenProvider(id, profile)
         const client = SsoClient.create(profile.ssoRegion, provider)
-        yield* loadLinkedProfilesIntoStore(this.store, id, client)
+
+        try {
+            yield* loadLinkedProfilesIntoStore(this.store, id, client)
+        } catch (err) {
+            getLogger().warn(`auth: failed to load linked connections from source "${id}": %s`, err)
+        }
     }
 
     public async createConnection(profile: SsoProfile): Promise<SsoConnection>
@@ -501,18 +511,8 @@ export class Auth implements AuthService, ConnectionManager {
             throw new Error('Creating linked connections is not supported')
         }
 
-        // XXX: Scoped connections must be shared as a workaround
-        const startUrl = profile.startUrl
-        if (profile.scopes) {
-            const sharedProfile = sortProfilesByScope(this.store.listProfiles().map(p => p[1])).find(
-                p => p.startUrl === startUrl
-            )
-            const scopes = Array.from(new Set([...profile.scopes, ...(sharedProfile?.scopes ?? [])]))
-            profile = sharedProfile ? { ...profile, scopes } : profile
-        }
-
         // XXX: `id` should be based off the resolved `idToken`, _not_ the source profile
-        const id = getSsoProfileKey(profile)
+        const id = getSsoProfileKey(profile) + '2'
         const tokenProvider = this.getTokenProvider(id, {
             ...profile,
             metadata: { connectionState: 'unauthenticated' },
@@ -582,7 +582,7 @@ export class Auth implements AuthService, ConnectionManager {
 
             return provider.invalidate()
         } else if (profile.type === 'iam') {
-            globals.loginManager.store.invalidateCredentials(fromString(id))
+            this.loginManager.store.invalidateCredentials(fromString(id))
         }
     }
 
@@ -711,6 +711,7 @@ export class Auth implements AuthService, ConnectionManager {
             type: profile.type,
             scopes: profile.scopes,
             startUrl: profile.startUrl,
+            defaultRegion: profile.ssoRegion,
             state: profile.metadata.connectionState,
             label: profile.metadata?.label ?? label,
             getToken: () => this.debouncedGetToken(id, provider),
@@ -733,15 +734,15 @@ export class Auth implements AuthService, ConnectionManager {
 
     private async createCachedCredentials(provider: CredentialsProvider) {
         const providerId = provider.getCredentialsId()
-        globals.loginManager.store.invalidateCredentials(providerId)
-        const { credentials } = await globals.loginManager.store.upsertCredentials(providerId, provider)
-        await globals.loginManager.validateCredentials(credentials, provider.getDefaultRegion())
+        this.loginManager.store.invalidateCredentials(providerId)
+        const { credentials } = await this.loginManager.store.upsertCredentials(providerId, provider)
+        await this.loginManager.validateCredentials(credentials, provider.getDefaultRegion())
 
         return credentials
     }
 
     private async getCachedCredentials(provider: CredentialsProvider) {
-        const creds = await globals.loginManager.store.getCredentials(provider.getCredentialsId())
+        const creds = await this.loginManager.store.getCredentials(provider.getCredentialsId())
         if (creds !== undefined && creds.credentialsHashCode === provider.getHashCode()) {
             return creds.credentials
         }
@@ -816,7 +817,12 @@ export class Auth implements AuthService, ConnectionManager {
         const legacyProfile = new CredentialsSettings().get('profile', defaultProfileId) || defaultProfileId
         const tryConnection = async (id: string) => {
             try {
-                await this.useConnection({ id })
+                const conn = await this.getConnection({ id })
+                if (conn === undefined) {
+                    return false
+                }
+
+                await this.useConnection(conn)
                 return true
             } catch (err) {
                 getLogger().warn(`auth: failed to auto-connect using "${id}": %s`, err)
@@ -855,7 +861,7 @@ const getPickerItemDescription = (conn: Connection) => {
     }
 
     const source = Auth.instance.getSourceProfileLabel(conn) ?? 'the environment'
-    return `IAM Credential, sourced from ${source}`
+    return `IAM Credential, linked to ${source}`
 }
 
 function toPickerItem(conn: Connection) {
@@ -879,21 +885,21 @@ export async function promptForConnection(auth: Auth, type?: 'iam' | 'sso') {
         data: 'editCredentials' as const,
     }
 
-    const items = auth
+    const connections = auth
         .listConnections()
         .filter(c => !type || c.type === type)
         .map(toPickerItem)
 
-    const items2 = (async function* () {
+    const items = (async function* () {
         let hasShownEdit = false
 
         yield [addNewConnection]
-        for await (const i of items) {
-            if (i.label.includes('profile:') && !hasShownEdit) {
+        for await (const conn of connections) {
+            if (conn.label.includes('profile:') && !hasShownEdit) {
                 hasShownEdit = true
-                yield [i, editCredentials]
+                yield [conn, editCredentials]
             } else {
-                yield [i]
+                yield [conn]
             }
         }
     })()
@@ -915,7 +921,7 @@ export async function promptForConnection(auth: Auth, type?: 'iam' | 'sso') {
             ? localize('aws.auth.promptConnection.iam.placeholder', 'Select an IAM credential')
             : localize('aws.auth.promptConnection.all.placeholder', 'Select a connection')
 
-    const resp = await showQuickPick<Connection | 'addNewConnection' | 'editCredentials'>(items2, {
+    const resp = await showQuickPick<Connection | 'addNewConnection' | 'editCredentials'>(items, {
         placeholder,
         title: localize('aws.auth.promptConnection.title', 'Switch Connection'),
         buttons: createCommonButtons(),
@@ -1026,8 +1032,7 @@ export const isSsoConnection = (conn?: Connection): conn is SsoConnection => con
 export const isBuilderIdConnection = (conn?: Connection): conn is SsoConnection =>
     isSsoConnection(conn) && conn.startUrl === builderIdStartUrl
 
-export async function createStartUrlPrompter(title: string, ignoreScopes = true) {
-    const requiredScopes = createSsoProfile('').scopes
+export async function createStartUrlPrompter(title: string) {
     const existingConnections = (await Auth.instance.listConnections().promise()).filter(isSsoConnection)
 
     function validateSsoUrl(url: string) {
@@ -1041,7 +1046,7 @@ export async function createStartUrlPrompter(title: string, ignoreScopes = true)
                 a.authority.toLowerCase() === b.authority.toLowerCase()
             const oldConn = existingConnections.find(conn => isSameAuthority(vscode.Uri.parse(conn.startUrl), uri))
 
-            if (oldConn && (ignoreScopes || hasScopes(oldConn, requiredScopes))) {
+            if (oldConn) {
                 return 'A connection for this start URL already exists. Sign out before creating a new one.'
             }
         } catch (err) {
@@ -1118,9 +1123,10 @@ const addConnection = Commands.register('aws.auth.addConnection', async () => {
             if (!isValidResponse(startUrl)) {
                 throw new CancellationError('user')
             }
+
             const region = await createRegionPrompter(undefined, {
                 serviceFilter: 'oidc',
-                title: 'Select the region that the identity source is located in',
+                placeholder: 'Select the region that the identity source is located in',
             }).prompt()
             if (!isValidResponse(region)) {
                 throw new CancellationError('user')
@@ -1128,7 +1134,7 @@ const addConnection = Commands.register('aws.auth.addConnection', async () => {
 
             telemetry.ui_click.emit({ elementId: 'connection_startUrl' })
 
-            const conn = await Auth.instance.createConnection(createSsoProfile(startUrl, region?.id))
+            const conn = await Auth.instance.createConnection(createSsoProfile(startUrl, region.id))
             return Auth.instance.useConnection(conn)
         }
         case 'builderId': {

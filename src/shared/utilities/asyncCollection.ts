@@ -19,14 +19,15 @@ export interface AsyncCollection<T> extends AsyncIterable<T> {
      */
     map<U>(fn: (obj: T) => Promise<U> | U): AsyncCollection<U>
 
-    unorderedMap<U>(fn: (obj: T) => Promise<U>): AsyncCollection<U>
-
     /**
      * Filters out results which will _not_ be passed on to further transformations.
      */
     filter<U extends T>(predicate: (item: T) => item is U): AsyncCollection<U>
     filter<U extends T>(predicate: (item: T) => boolean): AsyncCollection<U>
 
+    /**
+     * Resolves the first element that matches the predicate.
+     */
     find<U extends T>(predicate: (item: T) => item is U): Promise<U | undefined>
     find<U extends T>(predicate: (item: T) => boolean): Promise<U | undefined>
 
@@ -86,7 +87,6 @@ export function toCollection<T>(generator: () => AsyncGenerator<T, T | undefined
         filter: <U extends T>(predicate: Predicate<T, U>) =>
             toCollection<U>(() => filterGenerator<T, U>(generator(), predicate)),
         map: <U>(fn: (item: T) => Promise<U> | U) => toCollection<U>(() => mapGenerator(generator(), fn)),
-        unorderedMap: <U>(fn: (obj: T) => Promise<U>) => toCollection<U>(() => unorderedMap(generator(), fn)),
         limit: (count: number) => toCollection(() => delegateGenerator(generator(), takeFrom(count))),
         promise: () => promise(iterable),
         toMap: <U extends string = never, K extends StringProperty<T> = never>(selector: KeySelector<T, U> | K) =>
@@ -97,6 +97,14 @@ export function toCollection<T>(generator: () => AsyncGenerator<T, T | undefined
 
 export function isAsyncCollection<T>(iterable: AsyncIterable<T>): iterable is AsyncCollection<T> {
     return asyncCollection in iterable
+}
+
+function isIterable<T>(obj: any): obj is Iterable<T> {
+    return obj !== undefined && typeof obj[Symbol.iterator] === 'function'
+}
+
+function isAsyncIterable<T>(obj: any): obj is AsyncIterable<T> {
+    return obj && typeof obj === 'object' && typeof obj[Symbol.asyncIterator] === 'function'
 }
 
 async function* mapGenerator<T, U, R = T>(
@@ -169,7 +177,7 @@ async function* delegateGenerator<T, U, R = T>(
 }
 
 async function* flatten<T, U extends SafeUnboxIterable<T>>(item: T) {
-    if (isIterable<U>(item)) {
+    if (isIterable<U>(item) || isAsyncIterable<U>(item)) {
         yield* item
     } else {
         yield item as unknown as U
@@ -188,11 +196,7 @@ function takeFrom<T>(count: number) {
 /**
  * Either 'unbox' an Iterable value or leave it as-is if it's not an Iterable
  */
-type SafeUnboxIterable<T> = T extends Iterable<infer U> ? U : T
-
-export function isIterable<T>(obj: any): obj is Iterable<T> {
-    return obj !== undefined && typeof obj[Symbol.iterator] === 'function'
-}
+type SafeUnboxIterable<T> = T extends Iterable<infer U> ? U : T extends AsyncIterable<infer U> ? U : T
 
 async function promise<T>(iterable: AsyncIterable<T>): Promise<T[]> {
     const result: T[] = []
@@ -237,69 +241,6 @@ async function find<T, U extends T>(iterable: AsyncIterable<T>, predicate: (item
     for await (const item of iterable) {
         if (predicate(item)) {
             return item
-        }
-    }
-}
-
-async function* unorderedMap<T, U, R = T>(
-    generator: AsyncGenerator<T, R | undefined | void>,
-    fn: (item: T | R) => Promise<U>
-): AsyncGenerator<U, U | void> {
-    type Next = { readonly type: 'next'; readonly data: IteratorResult<T, R | undefined | void> }
-    type Pending = { readonly type: 'pending'; readonly data: U; readonly index: number }
-
-    const unresolved = new Map<number, Promise<Pending>>()
-    let count = 0
-    let isGeneratorDone = false
-    let isReturnValue = false
-    let nextValue: Promise<Next> | undefined
-
-    function next(): Promise<Next | Pending> {
-        if (isGeneratorDone) {
-            return Promise.race(unresolved.values())
-        }
-
-        nextValue ??= generator
-            .next()
-            .then(data => ({ type: 'next' as const, data }))
-            .finally(() => (nextValue = undefined))
-
-        if (unresolved.size === 0) {
-            return nextValue
-        }
-
-        const pending = Promise.race(unresolved.values())
-        return Promise.race([nextValue, pending])
-    }
-
-    function addPending(val: T | R) {
-        const index = count++
-        unresolved.set(
-            index,
-            fn(val).then(data => ({ type: 'pending' as const, data, index }))
-        )
-    }
-
-    while (!isGeneratorDone || unresolved.size > 0) {
-        const nextVal = await next()
-        if (nextVal.type === 'pending') {
-            unresolved.delete(nextVal.index)
-            if (isReturnValue && unresolved.size === 0) {
-                return nextVal.data
-            }
-            yield nextVal.data
-        } else if (nextVal.type === 'next') {
-            const { value, done } = nextVal.data
-            if (!done) {
-                addPending(value)
-            } else {
-                isGeneratorDone = true
-
-                if (value !== undefined) {
-                    isReturnValue = true
-                    addPending(value)
-                }
-            }
         }
     }
 }

@@ -4,7 +4,7 @@
  */
 
 import { AsyncCollection, toCollection } from './asyncCollection'
-import { SharedProp, AccumulableKeys, Coalesce } from './tsUtils'
+import { SharedProp, AccumulableKeys, Coalesce, isNonNullable } from './tsUtils'
 
 export function union<T>(a: Iterable<T>, b: Iterable<T>): Set<T> {
     const result = new Set<T>()
@@ -371,39 +371,39 @@ export async function* toStream<T>(values: Iterable<T | Promise<T>>): AsyncGener
     }
 }
 
+/**
+ * Joins two async iterables into a single generator.
+ *
+ * Values from each iterable are yielded as soon as they resolve. The order of values is preserved with respect
+ * to the source iterable but not necessarily other iterables. This can be imagined as popping off all elements
+ * of two stacks randomly: elements from the same stack will be in order while elements from different stacks
+ * can be in any order.
+ */
 export async function* join<T, U>(left: AsyncIterable<T>, right: AsyncIterable<U>): AsyncGenerator<T | U, void> {
     type Pending = { readonly data: IteratorResult<T> | IteratorResult<U>; readonly index: number }
-    const completed = new Map<number, boolean>()
-    const pendingResults = new Map<number, Promise<Pending>>()
+
+    const completed: [boolean, boolean] = [false, false]
+    const pendingResults: (Promise<Pending> | undefined)[] = []
     const leftIter = left[Symbol.asyncIterator]()
     const rightIter = right[Symbol.asyncIterator]()
 
     function next(iter: AsyncIterator<T> | AsyncIterator<U>, index: number) {
-        if (completed.get(index) === true) {
+        if (completed[index]) {
             return
         }
 
-        if (pendingResults.has(index)) {
-            return pendingResults.get(index)!
-        }
-
-        pendingResults.set(
-            index,
-            iter.next().then(data => ({ index, data }))
-        )
+        return (pendingResults[index] ??= iter.next().then(data => ({ index, data })))
     }
 
     do {
-        next(leftIter, 0)
-        next(rightIter, 1)
-
-        const { index, data } = await Promise.race(pendingResults.values())
-        pendingResults.delete(index)
+        const promises = [next(leftIter, 0), next(rightIter, 1)].filter(isNonNullable)
+        const { index, data } = await Promise.race(promises)
+        pendingResults[index] = undefined
 
         if (!data.done) {
             yield data.value
         } else {
-            completed.set(index, true)
+            completed[index] = true
         }
-    } while ([...completed.values()].some(v => v !== true) || pendingResults.size > 0)
+    } while (!completed.every(v => v))
 }
