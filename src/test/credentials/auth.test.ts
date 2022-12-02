@@ -101,7 +101,10 @@ describe('Auth', function () {
         const conn1 = await auth.createConnection(ssoProfile)
         const conn2 = await auth.createConnection(scopedSsoProfile)
         assert.deepStrictEqual(
-            (await auth.listConnections()).map(c => c.id),
+            await auth
+                .listConnections()
+                .map(c => c.id)
+                .promise(),
             [conn1.id, conn2.id]
         )
     })
@@ -114,7 +117,7 @@ describe('Auth', function () {
     it('can delete a connection', async function () {
         const conn = await auth.createConnection(ssoProfile)
         await auth.deleteConnection({ id: conn.id })
-        assert.strictEqual((await auth.listConnections()).length, 0)
+        assert.strictEqual((await auth.listConnections().promise()).length, 0)
     })
 
     it('can delete an active connection', async function () {
@@ -122,7 +125,7 @@ describe('Auth', function () {
         await auth.useConnection(conn)
         assert.ok(auth.activeConnection)
         await auth.deleteConnection(auth.activeConnection)
-        assert.strictEqual((await auth.listConnections()).length, 0)
+        assert.strictEqual((await auth.listConnections().promise()).length, 0)
         assert.strictEqual(auth.activeConnection, undefined)
     })
 

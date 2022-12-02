@@ -19,11 +19,16 @@ export interface AsyncCollection<T> extends AsyncIterable<T> {
      */
     map<U>(fn: (obj: T) => Promise<U> | U): AsyncCollection<U>
 
+    unorderedMap<U>(fn: (obj: T) => Promise<U>): AsyncCollection<U>
+
     /**
      * Filters out results which will _not_ be passed on to further transformations.
      */
     filter<U extends T>(predicate: (item: T) => item is U): AsyncCollection<U>
     filter<U extends T>(predicate: (item: T) => boolean): AsyncCollection<U>
+
+    find<U extends T>(predicate: (item: T) => item is U): Promise<U | undefined>
+    find<U extends T>(predicate: (item: T) => boolean): Promise<U | undefined>
 
     /**
      * Uses only the first 'count' number of values returned by the generator.
@@ -76,10 +81,12 @@ export function toCollection<T>(generator: () => AsyncGenerator<T, T | undefined
 
     return Object.assign(iterable, {
         [asyncCollection]: true,
+        find: <U extends T>(predicate: Predicate<T, U>) => find(iterable, predicate),
         flatten: () => toCollection<SafeUnboxIterable<T>>(() => delegateGenerator(generator(), flatten)),
         filter: <U extends T>(predicate: Predicate<T, U>) =>
             toCollection<U>(() => filterGenerator<T, U>(generator(), predicate)),
         map: <U>(fn: (item: T) => Promise<U> | U) => toCollection<U>(() => mapGenerator(generator(), fn)),
+        unorderedMap: <U>(fn: (obj: T) => Promise<U>) => toCollection<U>(() => unorderedMap(generator(), fn)),
         limit: (count: number) => toCollection(() => delegateGenerator(generator(), takeFrom(count))),
         promise: () => promise(iterable),
         toMap: <U extends string = never, K extends StringProperty<T> = never>(selector: KeySelector<T, U> | K) =>
@@ -224,4 +231,75 @@ async function asyncIterableToMap<T, K extends StringProperty<T>, U extends stri
     }
 
     return result
+}
+
+async function find<T, U extends T>(iterable: AsyncIterable<T>, predicate: (item: T) => item is U) {
+    for await (const item of iterable) {
+        if (predicate(item)) {
+            return item
+        }
+    }
+}
+
+async function* unorderedMap<T, U, R = T>(
+    generator: AsyncGenerator<T, R | undefined | void>,
+    fn: (item: T | R) => Promise<U>
+): AsyncGenerator<U, U | void> {
+    type Next = { readonly type: 'next'; readonly data: IteratorResult<T, R | undefined | void> }
+    type Pending = { readonly type: 'pending'; readonly data: U; readonly index: number }
+
+    const unresolved = new Map<number, Promise<Pending>>()
+    let count = 0
+    let isGeneratorDone = false
+    let isReturnValue = false
+    let nextValue: Promise<Next> | undefined
+
+    function next(): Promise<Next | Pending> {
+        if (isGeneratorDone) {
+            return Promise.race(unresolved.values())
+        }
+
+        nextValue ??= generator
+            .next()
+            .then(data => ({ type: 'next' as const, data }))
+            .finally(() => (nextValue = undefined))
+
+        if (unresolved.size === 0) {
+            return nextValue
+        }
+
+        const pending = Promise.race(unresolved.values())
+        return Promise.race([nextValue, pending])
+    }
+
+    function addPending(val: T | R) {
+        const index = count++
+        unresolved.set(
+            index,
+            fn(val).then(data => ({ type: 'pending' as const, data, index }))
+        )
+    }
+
+    while (!isGeneratorDone || unresolved.size > 0) {
+        const nextVal = await next()
+        if (nextVal.type === 'pending') {
+            unresolved.delete(nextVal.index)
+            if (isReturnValue && unresolved.size === 0) {
+                return nextVal.data
+            }
+            yield nextVal.data
+        } else if (nextVal.type === 'next') {
+            const { value, done } = nextVal.data
+            if (!done) {
+                addPending(value)
+            } else {
+                isGeneratorDone = true
+
+                if (value !== undefined) {
+                    isReturnValue = true
+                    addPending(value)
+                }
+            }
+        }
+    }
 }

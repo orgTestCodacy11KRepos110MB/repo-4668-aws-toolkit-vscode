@@ -350,17 +350,60 @@ export function pageableToCollection<
  *
  * The resulting stream will throw if any of the promises are rejected.
  */
-export async function* toStream<T>(values: Iterable<Promise<T>>): AsyncGenerator<T, void> {
-    const unresolved = new Map<number, Promise<T>>()
-    for (const promise of values) {
-        const index = unresolved.size
-        unresolved.set(
-            index,
-            promise.then(val => (unresolved.delete(index), val))
-        )
+export async function* toStream<T>(values: Iterable<T | Promise<T>>): AsyncGenerator<T, void> {
+    const unresolved = new Map<number, Promise<{ index: number; data: T }>>()
+    for (const val of values) {
+        if (val instanceof Promise) {
+            const index = unresolved.size
+            unresolved.set(
+                index,
+                val.then(data => ({ index, data }))
+            )
+        } else {
+            yield val
+        }
     }
 
     while (unresolved.size > 0) {
-        yield Promise.race(unresolved.values())
+        const { index, data } = await Promise.race(unresolved.values())
+        unresolved.delete(index)
+        yield data
     }
+}
+
+export async function* join<T, U>(left: AsyncIterable<T>, right: AsyncIterable<U>): AsyncGenerator<T | U, void> {
+    type Pending = { readonly data: IteratorResult<T> | IteratorResult<U>; readonly index: number }
+    const completed = new Map<number, boolean>()
+    const pendingResults = new Map<number, Promise<Pending>>()
+    const leftIter = left[Symbol.asyncIterator]()
+    const rightIter = right[Symbol.asyncIterator]()
+
+    function next(iter: AsyncIterator<T> | AsyncIterator<U>, index: number) {
+        if (completed.get(index) === true) {
+            return
+        }
+
+        if (pendingResults.has(index)) {
+            return pendingResults.get(index)!
+        }
+
+        pendingResults.set(
+            index,
+            iter.next().then(data => ({ index, data }))
+        )
+    }
+
+    do {
+        next(leftIter, 0)
+        next(rightIter, 1)
+
+        const { index, data } = await Promise.race(pendingResults.values())
+        pendingResults.delete(index)
+
+        if (!data.done) {
+            yield data.value
+        } else {
+            completed.set(index, true)
+        }
+    } while ([...completed.values()].some(v => v !== true) || pendingResults.size > 0)
 }

@@ -69,6 +69,7 @@ import { Logging } from './shared/logger/commands'
 import { UriHandler } from './shared/vscode/uriHandler'
 import { telemetry } from './shared/telemetry/telemetry'
 import { Auth } from './credentials/auth'
+import { SsoCredentialsProviderFactory } from './credentials/providers/ssoCredentialsProviderFactory'
 
 let localize: nls.LocalizeFunc
 
@@ -298,6 +299,7 @@ function initializeManifestPaths(extensionContext: vscode.ExtensionContext) {
 function initializeCredentialsProviderManager() {
     const manager = CredentialsProviderManager.getInstance()
     manager.addProviderFactory(new SharedCredentialsProviderFactory())
+    manager.addProviderFactory(new SsoCredentialsProviderFactory(Auth.instance))
     manager.addProviders(new Ec2CredentialsProvider(), new EcsCredentialsProvider(), new EnvVarsCredentialsProvider())
 }
 
