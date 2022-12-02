@@ -31,6 +31,8 @@ export const awsBuilderIdSsoProfile = createBuilderIdProfile()
 const isValidCodeWhispererConnection = (conn: Connection): conn is SsoConnection =>
     !isCloud9() && isSsoConnection(conn) && hasScopes(conn, codewhispererScopes)
 
+const createCodeWhispererSsoProfile = (startUrl: string) => createSsoProfile(startUrl, 'us-east-1', codewhispererScopes)
+
 export class AuthUtil {
     private readonly isAvailable = getCodeCatalystDevEnvId() === undefined
     static #instance: AuthUtil
@@ -104,7 +106,7 @@ export class AuthUtil {
             )
 
         if (!existingConn) {
-            const conn = await this.auth.createConnection(createSsoProfile(startUrl))
+            const conn = await this.auth.createConnection(createCodeWhispererSsoProfile(startUrl))
             return this.secondaryAuth.useNewConnection(conn)
         } else if (isValidCodeWhispererConnection(existingConn)) {
             return this.secondaryAuth.useNewConnection(existingConn)
@@ -181,7 +183,7 @@ export class AuthUtil {
             throw new CancellationError('user')
         }
 
-        const upgradedConn = await this.auth.createConnection(createSsoProfile(existingConn.startUrl))
+        const upgradedConn = await this.auth.createConnection(createCodeWhispererSsoProfile(existingConn.startUrl))
         try {
             if (this.auth.activeConnection?.id === (existingConn as SsoConnection).id) {
                 await this.auth.useConnection(upgradedConn)
@@ -206,4 +208,4 @@ export class AuthUtil {
 }
 
 export const isUpgradeableConnection = (conn?: Connection): conn is SsoConnection =>
-    !!conn && !isValidCodeWhispererConnection(conn) && isSsoConnection(conn)
+    !!conn && isSsoConnection(conn) && conn.defaultRegion === 'us-east-1' && !isValidCodeWhispererConnection(conn)

@@ -88,7 +88,11 @@ export async function set(key: string, value: any, context: vscode.Memento): Pro
 export const showSsoSignIn = Commands.declare('aws.codeWhisperer.sso', () => async () => {
     telemetry.ui_click.emit({ elementId: 'cw_signUp_Cta' })
 
-    await showConnectionPrompt()
+    if (AuthUtil.instance.conn !== undefined) {
+        await vscode.commands.executeCommand('aws.codeWhisperer.enableCodeSuggestions')
+    } else {
+        await showConnectionPrompt()
+    }
 })
 
 export const showLearnMore = Commands.declare('aws.codeWhisperer.learnMore', () => async () => {

@@ -13,7 +13,7 @@ import { createStartUrlPrompter } from '../../credentials/auth'
 import { telemetry } from '../../shared/telemetry/telemetry'
 
 export const getStartUrl = async () => {
-    const inputBox = await createStartUrlPrompter('IAM Identity Center', false)
+    const inputBox = await createStartUrlPrompter('IAM Identity Center')
     const userInput = await inputBox.prompt()
     if (!isValidResponse(userInput)) {
         telemetry.ui_click.emit({ elementId: 'connection_optionescapecancel' })

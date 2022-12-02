@@ -31,6 +31,9 @@ export const showConnectionPrompt = async () => {
         })
 
         if (didUpgrade) {
+            await vscode.commands.executeCommand('aws.codeWhisperer.refresh')
+            await vscode.commands.executeCommand('aws.codeWhisperer.enableCodeSuggestions')
+
             return
         }
     }
