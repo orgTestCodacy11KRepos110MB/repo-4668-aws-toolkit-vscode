@@ -1,0 +1,4 @@
+{
+	"type": "Feature",
+	"description": "The `aws.injectCredentials` setting can be used to automatically inject the current AWS connection into all terminals. This is disabled by default."
+}

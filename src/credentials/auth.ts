@@ -24,7 +24,7 @@ import { SsoToken } from './sso/model'
 import { SsoClient } from './sso/clients'
 import { getLogger } from '../shared/logger'
 import { CredentialsProviderManager } from './providers/credentialsProviderManager'
-import { asString, CredentialsProvider, fromString } from './providers/credentials'
+import { asString, CredentialsProvider, credentialsProviderToTelemetryType, fromString } from './providers/credentials'
 import { once } from '../shared/utilities/functionUtils'
 import { getResourceFromTreeNode } from '../shared/treeview/utils'
 import { Instance } from '../shared/utilities/typeConstructors'
@@ -88,6 +88,7 @@ export interface IamConnection {
     // This may change in the future after refactoring legacy implementations
     readonly id: string
     readonly label: string
+    readonly defaultRegion: string | undefined
     getCredentials(): Promise<Credentials>
 }
 
@@ -570,6 +571,7 @@ export class Auth implements AuthService, ConnectionManager {
             type: 'iam',
             state: profile.metadata.connectionState,
             label: profile.metadata.label ?? id,
+            defaultRegion: provider.getDefaultRegion(),
             getCredentials: () => this.debouncedGetCredentials(id, provider),
         }
     }
@@ -633,6 +635,11 @@ export class Auth implements AuthService, ConnectionManager {
 
     private readonly debouncedGetCredentials = keyedDebounce(Auth.prototype.getCredentials.bind(this))
     private async getCredentials(id: Connection['id'], provider: CredentialsProvider): Promise<Credentials> {
+        telemetry.record({
+            credentialType: provider.getTelemetryType(),
+            credentialSourceId: credentialsProviderToTelemetryType(provider.getProviderType()),
+        })
+
         const credentials = await this.getCachedCredentials(provider)
         if (credentials !== undefined) {
             return credentials
@@ -722,7 +729,7 @@ export class Auth implements AuthService, ConnectionManager {
 const getConnectionIcon = (conn: Connection) =>
     conn.type === 'sso' ? getIcon('vscode-account') : getIcon('vscode-key')
 
-function toPickerItem(conn: Connection) {
+export function toPickerItem(conn: Connection) {
     const label = codicon`${getConnectionIcon(conn)} ${conn.label}`
     const descPrefix = conn.type === 'iam' ? 'IAM Credential' : undefined
     const descSuffix = conn.id.startsWith('profile:')
