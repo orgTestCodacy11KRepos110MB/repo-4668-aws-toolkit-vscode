@@ -8,7 +8,7 @@ import {
     CloudWatchLogsParameters,
     getLogEventsFromUriComponents,
     LogDataRegistry,
-    getInitialLogData,
+    initLogData,
 } from '../registry/logDataRegistry'
 import { getLogger } from '../../shared/logger'
 import { parseCloudWatchLogsUri, createURIFromArgs } from '../cloudWatchLogsUtils'
@@ -71,10 +71,10 @@ export class LogDataDocumentProvider implements vscode.TextDocumentContentProvid
                 limit: this.registry.configuration.get('limit', 10000),
             }
             logGroupInfo.streamName = streamID
-            const initialStreamData = getInitialLogData(logGroupInfo, parameters, getLogEventsFromUriComponents)
+            const logData = initLogData(logGroupInfo, parameters, getLogEventsFromUriComponents)
             const streamUri = createURIFromArgs(logGroupInfo, parameters)
 
-            await this.registry.registerLog(streamUri, initialStreamData)
+            await this.registry.registerLog(streamUri, logData)
             const doc = await vscode.workspace.openTextDocument(streamUri)
             vscode.languages.setTextDocumentLanguage(doc, 'log')
 

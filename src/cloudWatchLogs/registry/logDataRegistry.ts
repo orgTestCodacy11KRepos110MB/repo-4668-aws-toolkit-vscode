@@ -318,7 +318,7 @@ export async function filterLogEventsFromUriComponents(
     }
 
     const timeout = new Timeout(300000)
-    showMessageWithCancel(`Loading data from log group ${logGroupInfo.groupName}`, timeout)
+    showMessageWithCancel(`Searching log group: ${logGroupInfo.groupName}`, timeout)
     const responsePromise = client.filterLogEvents(cwlParameters)
     const response = await waitTimeout(responsePromise, timeout, { allowUndefined: false })
 
@@ -332,7 +332,7 @@ export async function filterLogEventsFromUriComponents(
             nextBackwardToken: nextToken,
         }
     } else {
-        throw new Error('cwl:`filterLogEvents` did not return anything.')
+        throw new Error('cwl: filterLogEvents returned null')
     }
 }
 
@@ -356,7 +356,7 @@ export async function getLogEventsFromUriComponents(
     }
 
     const timeout = new Timeout(300000)
-    showMessageWithCancel(`Loading data from log stream ${logGroupInfo.streamName}`, timeout)
+    showMessageWithCancel(`Fetching logs: ${logGroupInfo.streamName}`, timeout)
     const responsePromise = client.getLogEvents(cwlParameters)
     const response = await waitTimeout(responsePromise, timeout, { allowUndefined: false })
 
@@ -371,7 +371,8 @@ export async function getLogEventsFromUriComponents(
     }
 }
 
-export function getInitialLogData(
+/** Creates a log data container including a log fetcher which will populate the data if called. */
+export function initLogData(
     logGroupInfo: CloudWatchLogsGroupInfo,
     parameters: CloudWatchLogsParameters,
     retrieveLogsFunction: CloudWatchLogsAction
