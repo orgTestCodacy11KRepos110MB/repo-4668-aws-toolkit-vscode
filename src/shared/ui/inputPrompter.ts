@@ -10,16 +10,19 @@ import { QuickInputButton, PrompterButtons } from './buttons'
 import { Prompter, PromptResult } from './prompter'
 
 /** Additional options to configure the `InputBox` beyond the standard API */
-export type ExtendedInputBoxOptions =
-    // TODO: allow `validateInput` to return Thenable so we don't need to omit it here.
-    Omit<vscode.InputBoxOptions, 'validateInput' | 'placeHolder'> & {
-        title?: string
-        step?: number
-        placeholder?: string
-        totalSteps?: number
-        buttons?: PrompterButtons<string>
-        validateInput?(value: string, isFinalInput?: boolean): string | undefined | Thenable<string | undefined>
-    }
+export type ExtendedInputBoxOptions = Omit<vscode.InputBoxOptions, 'placeHolder'> & {
+    title?: string
+    step?: number
+    placeholder?: string
+    totalSteps?: number
+    buttons?: PrompterButtons<string>
+    /**
+     * XXX: Thenable allows promises, but they won't be awaited currently?
+     * - https://github.com/microsoft/vscode/blob/78947444843f4ebb094e5ab4288360010a293463/extensions/git-base/src/remoteSource.ts#L13
+     * - https://github.com/microsoft/vscode/blob/78947444843f4ebb094e5ab4288360010a293463/src/vs/base/browser/ui/inputbox/inputBox.ts#L511
+     */
+    validateInput?(value: string, isFinalInput?: boolean): string | undefined | Thenable<string | undefined>
+}
 
 export type InputBox = Omit<vscode.InputBox, 'buttons'> & { buttons: PrompterButtons<string> }
 
